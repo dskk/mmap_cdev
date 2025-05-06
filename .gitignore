@@ -1,0 +1,8 @@
+drv/*.ko
+drv/*.o
+drv/*.cmd
+drv/*.mod
+drv/*.mod.*
+drv/modules.order
+drv/Module.symvers
+test/*.out
