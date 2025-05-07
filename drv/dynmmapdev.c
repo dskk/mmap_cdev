@@ -44,19 +44,17 @@ static vm_fault_t dynmmapdev_fault(struct vm_fault *vmf)
             vmf->address, offset);
 
     // 新しい1ページ分確保
-    page_addr = kzalloc(PAGE_SIZE, GFP_KERNEL);
-    if (!page_addr)
+    page = alloc_page(GFP_KERNEL);
+    if (!page)
         return VM_FAULT_OOM;
 
-    // 適当に内容を埋める（例：オフセットに応じた値を書き込む）
-    memset(page_addr, page_index & 0xff, PAGE_SIZE);
-
+    page_addr = page_address(page);
     phys_addr = virt_to_phys(page_addr);
     pr_info("dynmmapdev: allocated kernel_addr=0x%p phys_addr=0x%llx\n",
             page_addr, (unsigned long long)phys_addr);
 
-    // カーネルアドレスをstruct pageに変換
-    page = virt_to_page(page_addr);
+    // 適当に内容を埋める（例：オフセットに応じた値を書き込む）
+    memset(page_addr, page_index & 0xff, PAGE_SIZE);
 
     // ページ参照カウントを上げる
     get_page(page);
@@ -148,8 +146,22 @@ static int __init dynmmapdev_init(void)
     return 0;
 }
 
+static void dynmmapdev_cleanup_pages(void)
+{
+    struct page *page;
+    unsigned long index;
+
+    xa_for_each(&pagemap, index, page) {
+        pr_info("dynmmapdev: free page at index=%lu\n", index);
+        put_page(page);
+    }
+
+    xa_destroy(&pagemap);
+}
+
 static void __exit dynmmapdev_exit(void)
 {
+    dynmmapdev_cleanup_pages();
     device_destroy(dynmmapdev_class, dev_number);
     class_destroy(dynmmapdev_class);
     cdev_del(&dynmmapdev_cdev);
