@@ -13,6 +13,10 @@ MODULE_LICENSE("GPL");
 
 #define DYNMMAPDEV_IOC_MAGIC 'd'
 #define DYNMMAPDEV_IOC_UNMAP_PAGE _IOW(DYNMMAPDEV_IOC_MAGIC, 1, unsigned long)
+struct ioctl_data {
+    unsigned long addr;
+    unsigned long offset;
+};
 
 #define DEVICE_NAME "dynmmapdev"
 #define DEVICE_SIZE (16 * 4096) // 16ページ分仮想空間を作る（実際に物理は使わない）
@@ -24,7 +28,7 @@ static DEFINE_XARRAY(pagemap);         // ユーザーアドレスとカーネ�
 
 static long dynmmapdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    unsigned long addr;
+    struct ioctl_data data;
     struct mm_struct *mm = current->mm;
     struct vm_area_struct *vma;
     unsigned long start, end;
@@ -32,25 +36,31 @@ static long dynmmapdev_ioctl(struct file *file, unsigned int cmd, unsigned long 
     if (cmd != DYNMMAPDEV_IOC_UNMAP_PAGE)
         return -EINVAL;
 
-    if (copy_from_user(&addr, (void __user *)arg, sizeof(addr)))
+    if (copy_from_user(&data, (void __user *)arg, sizeof(struct ioctl_data)))
         return -EFAULT;
 
     down_write(&mm->mmap_lock);
 
-    vma = find_vma(mm, addr);
-    if (!vma || addr < vma->vm_start) {
+    vma = find_vma(mm, data.addr);
+    if (!vma || data.addr < vma->vm_start) {
         up_write(&mm->mmap_lock);
         return -EINVAL;
     }
 
+    unsigned long pfn = page_to_pfn(virt_to_page(data.addr));
+    // phys_addr_t phys_addr = PFN_PHYS(pfn);
+
     // 削除対象の仮想ページ範囲（1ページ）
-    start = addr & PAGE_MASK;
+    start = data.addr & PAGE_MASK;
     end = start + PAGE_SIZE;
 
     pr_info("dynmmapdev: zap_vma_ptes 0x%lx - 0x%lx\n", start, end);
 
     // PTEの削除
     zap_vma_ptes(vma, start, PAGE_SIZE);
+    zap_vma_ptes(vma, start + data.offset, PAGE_SIZE);
+    pgprot_t prot = vm_get_page_prot(VM_READ | VM_SHARED);
+    int ret = vmf_insert_pfn_prot(vma, data.addr + data.offset, pfn, prot);
 
     up_write(&mm->mmap_lock);
     return 0;
@@ -128,7 +138,8 @@ static int dynmmapdev_mmap(struct file *file, struct vm_area_struct *vma)
         vma->vm_start, vma->vm_end, size);
 
     vma->vm_ops = &dynmmap_vm_ops;
-    vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+    vm_flags_clear(vma, VM_IO);
+    vm_flags_set(vma, VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
 
     return 0;
 }
